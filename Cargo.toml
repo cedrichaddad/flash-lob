@@ -1,0 +1,34 @@
+[package]
+name = "flash-lob"
+version = "0.1.0"
+edition = "2021"
+description = "A deterministic, high-frequency limit order book matching engine"
+license = "MIT"
+
+[features]
+default = []
+runtime = ["rtrb"]
+
+[dependencies]
+core_affinity = "0.8"       # CPU pinning for cache locality
+rustc-hash = "2"            # Fast non-cryptographic hashing (FxHash)
+rtrb = { version = "0.3", optional = true }  # Lock-free SPSC ring buffer
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
+rand_chacha = "0.3"         # Deterministic PRNG for golden master tests
+
+[[bench]]
+name = "latency"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = 3
+
+[profile.bench]
+lto = true
+codegen-units = 1
