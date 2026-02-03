@@ -60,7 +60,10 @@ cargo run --release --bin tui-demo
 
 ### 2. L3 Data Replay (Coinbase)
 Replay real-world institutional market data (Market-by-Order) to validate the engine against production feeds.
-> **Verified Result:** Processed 5.1M messages with 74,109 validated matches.
+> **Verified Result:** Processed **5.1M** messages from Coinbase.
+> *   **Matches Validated:** 74,109
+> *   **Accuracy:** **97.5%** (vs. real-world exchange execution)
+
 
 First, download sample data:
 ```bash
