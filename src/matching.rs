@@ -50,11 +50,11 @@ impl MatchingEngine {
     /// 4. For IOC: Cancel any unfilled portion (don't rest)
     /// 5. For Limit: Rest unfilled portion in the book
     ///
-    /// # Returns
-    /// Vector of output events (trades, book updates, etc.)
-    #[must_use]
-    pub fn process_place(&mut self, order: PlaceOrder) -> Vec<OutputEvent> {
-        let mut events = Vec::new();
+    /// # Arguments
+    /// * `order` - The order to place
+    /// * `events` - Mutable buffer to append output events to
+    pub fn process_place(&mut self, order: PlaceOrder, events: &mut Vec<OutputEvent>) {
+        // events.clear(); - caller responsibility to clear if needed
         
         // Validate
         if order.qty == 0 {
@@ -62,7 +62,7 @@ impl MatchingEngine {
                 order_id: order.order_id,
                 reason: RejectReason::InvalidQuantity,
             }));
-            return events;
+            return;
         }
         
         // Check for duplicate order ID
@@ -71,7 +71,7 @@ impl MatchingEngine {
                 order_id: order.order_id,
                 reason: RejectReason::DuplicateOrderId,
             }));
-            return events;
+            return;
         }
         
         // For FOK orders: Check if we can fill the entire quantity
@@ -82,21 +82,21 @@ impl MatchingEngine {
                     order_id: order.order_id,
                     reason: RejectReason::InsufficientLiquidity,
                 }));
-                return events;
+                return;
             }
         }
         
         let mut remaining_qty = order.qty;
         
         // Phase 1: CROSSING (aggressive matching)
-        remaining_qty = self.cross_order(&order, remaining_qty, &mut events);
+        remaining_qty = self.cross_order(&order, remaining_qty, events);
         
         // Phase 2: Handle remaining quantity based on order type
         if remaining_qty > 0 {
             match order.order_type {
                 OrderType::Limit => {
                     // Rest the order in the book
-                    if let Some(_arena_idx) = self.rest_order(&order, remaining_qty, &mut events) {
+                    if let Some(_arena_idx) = self.rest_order(&order, remaining_qty, events) {
                         // Order is now resting
                     } else {
                         // Arena is full
@@ -117,8 +117,6 @@ impl MatchingEngine {
                 }
             }
         }
-        
-        events
     }
     
     /// Calculate the total available quantity at prices that cross with the order.
@@ -126,21 +124,29 @@ impl MatchingEngine {
     fn calculate_available_qty(&self, order: &PlaceOrder) -> u32 {
         let mut available = 0u32;
         
-        // Iterate through opposite side levels
+        // Iterate through opposite side levels using efficient BTreeMap range scan
         match order.side {
             Side::Bid => {
-                // For a bid, check all ask levels <= order price
-                for (&price, level) in self.book.asks.iter() {
-                    if price <= order.price {
-                        available = available.saturating_add(level.total_qty as u32);
+                // For a bid, check check all ask levels <= order price
+                // Asks are increasingly ordered. We want all asks from min to order.price
+                for (_, level) in self.book.asks.range(..=order.price) {
+                    available = available.saturating_add(level.total_qty as u32);
+                    // Optimization: We could early exit if available >= order.qty 
+                    // loop break optimization is valid for FOK check
+                    if available >= order.qty {
+                        return available;
                     }
                 }
             }
             Side::Ask => {
                 // For an ask, check all bid levels >= order price
-                for (&price, level) in self.book.bids.iter() {
-                    if price >= order.price {
-                        available = available.saturating_add(level.total_qty as u32);
+                // Bids are increasingly ordered. We want all bids from order.price to max
+                // Note: Standard matching logic usually walks best->worst. 
+                // range(order.price..) gives us all bids >= price.
+                for (_, level) in self.book.bids.range(order.price..) {
+                    available = available.saturating_add(level.total_qty as u32);
+                    if available >= order.qty {
+                        return available;
                     }
                 }
             }
@@ -360,11 +366,10 @@ impl MatchingEngine {
     
     /// Process a cancel order command.
     ///
-    /// # Returns
-    /// Vector of output events
-    pub fn process_cancel(&mut self, cancel: CancelOrder) -> Vec<OutputEvent> {
-        let mut events = Vec::new();
-        
+    /// # Arguments
+    /// * `cancel` - The cancel command
+    /// * `events` - Mutable buffer to extend with events
+    pub fn process_cancel(&mut self, cancel: CancelOrder, events: &mut Vec<OutputEvent>) {
         // Look up order
         let info = match self.book.get_order(cancel.order_id) {
             Some(info) => *info,
@@ -373,7 +378,7 @@ impl MatchingEngine {
                     order_id: cancel.order_id,
                     reason: RejectReason::OrderNotFound,
                 }));
-                return events;
+                return;
             }
         };
         
@@ -401,7 +406,6 @@ impl MatchingEngine {
             new_count,
         }));
         
-        events
     }
     
     // ========================================================================

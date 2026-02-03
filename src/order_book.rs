@@ -4,6 +4,7 @@
 //! and O(1) order lookup for cancellation.
 
 use rustc_hash::FxHashMap;
+use std::collections::BTreeMap;
 use crate::arena::{Arena, ArenaIndex};
 use crate::command::Side;
 use crate::price_level::PriceLevel;
@@ -24,42 +25,37 @@ pub struct OrderInfo {
     pub user_id: u64,
 }
 
-/// Sparse Order Book using HashMaps for price levels.
+/// Sparse Order Book using BTreeMap for ordered price levels.
 ///
-/// Best for assets with large price ranges (crypto, FX).
-/// Uses FxHashMap for fast non-cryptographic hashing.
+/// Ensures O(1) (amortized) access to best bid/ask and O(log N) level insertion.
+/// Order lookup (ID -> PriceLevel) remains O(1) via FxHashMap.
 pub struct OrderBook {
-    /// Bid price levels (buy orders)
-    pub bids: FxHashMap<u64, PriceLevel>,
-    /// Ask price levels (sell orders)
-    pub asks: FxHashMap<u64, PriceLevel>,
-    /// Cached best bid price (highest buy price)
-    best_bid: Option<u64>,
-    /// Cached best ask price (lowest sell price)
-    best_ask: Option<u64>,
-    /// Order lookup map: OrderId -> OrderInfo
+    /// Bid price levels (buy orders) - Ordered
+    pub bids: BTreeMap<u64, PriceLevel>,
+    /// Ask price levels (sell orders) - Ordered
+    pub asks: BTreeMap<u64, PriceLevel>,
+    /// Order lookup map: OrderId -> OrderInfo (Keep O(1))
     order_map: FxHashMap<u64, OrderInfo>,
 }
 
 impl OrderBook {
     /// Create a new empty order book
+    /// Create a new empty order book
     pub fn new() -> Self {
         Self {
-            bids: FxHashMap::default(),
-            asks: FxHashMap::default(),
-            best_bid: None,
-            best_ask: None,
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
             order_map: FxHashMap::default(),
         }
     }
     
     /// Create a new order book with pre-allocated capacity
-    pub fn with_capacity(levels: usize, orders: usize) -> Self {
+    /// Create a new order book with pre-allocated capacity for order map.
+    /// BTreeMap nodes are allocated on demand.
+    pub fn with_capacity(_levels: usize, orders: usize) -> Self {
         Self {
-            bids: FxHashMap::with_capacity_and_hasher(levels, Default::default()),
-            asks: FxHashMap::with_capacity_and_hasher(levels, Default::default()),
-            best_bid: None,
-            best_ask: None,
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
             order_map: FxHashMap::with_capacity_and_hasher(orders, Default::default()),
         }
     }
@@ -70,22 +66,24 @@ impl OrderBook {
     
     /// Get the best bid price (highest buy price)
     #[inline]
+    /// Get the best bid price (highest buy price)
+    #[inline]
     pub fn best_bid(&self) -> Option<u64> {
-        self.best_bid
+        self.bids.keys().next_back().copied()
     }
     
     /// Get the best ask price (lowest sell price)
     #[inline]
     pub fn best_ask(&self) -> Option<u64> {
-        self.best_ask
+        self.asks.keys().next().copied()
     }
     
     /// Get the best price on a given side
     #[inline]
     pub fn best_price(&self, side: Side) -> Option<u64> {
         match side {
-            Side::Bid => self.best_bid,
-            Side::Ask => self.best_ask,
+            Side::Bid => self.best_bid(),
+            Side::Ask => self.best_ask(),
         }
     }
     
@@ -93,8 +91,8 @@ impl OrderBook {
     #[inline]
     pub fn best_opposite_price(&self, side: Side) -> Option<u64> {
         match side {
-            Side::Bid => self.best_ask,  // Buyer matches with lowest ask
-            Side::Ask => self.best_bid,  // Seller matches with highest bid
+            Side::Bid => self.best_ask(),  // Buyer matches with lowest ask
+            Side::Ask => self.best_bid(),  // Seller matches with highest bid
         }
     }
     
@@ -170,8 +168,8 @@ impl OrderBook {
         let level = self.get_or_create_level(side, price);
         level.push_back(arena, arena_index);
         
-        // Update best price cache
-        self.update_best_price_on_add(side, price);
+        // Update best price cache - No longer needed with BTreeMap
+        // self.update_best_price_on_add(side, price);
         
         true
     }
@@ -199,7 +197,10 @@ impl OrderBook {
             
             // Clean up empty level and update best price
             if is_empty {
-                self.remove_empty_level(info.side, info.price);
+                match info.side {
+                    Side::Bid => { self.bids.remove(&info.price); },
+                    Side::Ask => { self.asks.remove(&info.price); },
+                }
             }
         }
         
@@ -226,58 +227,26 @@ impl OrderBook {
     }
     
     // ========================================================================
+    // ========================================================================
     // Level Removal
     // ========================================================================
     
-    /// Remove an empty price level and update best price if needed.
+    /// Remove an empty price level.
+    ///
+    /// Since we use BTreeMap, we just remove the key.
+    /// Best price is automatically handled by the ordered structure.
     pub fn remove_empty_level(&mut self, side: Side, price: u64) {
         match side {
             Side::Bid => {
                 self.bids.remove(&price);
-                if self.best_bid == Some(price) {
-                    self.recalculate_best_bid();
-                }
             }
             Side::Ask => {
                 self.asks.remove(&price);
-                if self.best_ask == Some(price) {
-                    self.recalculate_best_ask();
-                }
             }
         }
     }
     
-    // ========================================================================
-    // Best Price Management
-    // ========================================================================
-    
-    /// Update best price cache when adding an order.
-    fn update_best_price_on_add(&mut self, side: Side, price: u64) {
-        match side {
-            Side::Bid => {
-                if self.best_bid.map_or(true, |best| price > best) {
-                    self.best_bid = Some(price);
-                }
-            }
-            Side::Ask => {
-                if self.best_ask.map_or(true, |best| price < best) {
-                    self.best_ask = Some(price);
-                }
-            }
-        }
-    }
-    
-    /// Recalculate best bid price by scanning all bid levels.
-    /// Called when the current best bid level becomes empty.
-    fn recalculate_best_bid(&mut self) {
-        self.best_bid = self.bids.keys().copied().max();
-    }
-    
-    /// Recalculate best ask price by scanning all ask levels.
-    /// Called when the current best ask level becomes empty.
-    fn recalculate_best_ask(&mut self) {
-        self.best_ask = self.asks.keys().copied().min();
-    }
+
     
     // ========================================================================
     // Utility Methods
@@ -304,17 +273,17 @@ impl OrderBook {
     }
     
     /// Clear all orders from the book
+    /// Clear all orders from the book
     pub fn clear(&mut self) {
         self.bids.clear();
         self.asks.clear();
-        self.best_bid = None;
-        self.best_ask = None;
         self.order_map.clear();
     }
     
     /// Calculate spread (best_ask - best_bid)
+    /// Calculate spread (best_ask - best_bid)
     pub fn spread(&self) -> Option<u64> {
-        match (self.best_bid, self.best_ask) {
+        match (self.best_bid(), self.best_ask()) {
             (Some(bid), Some(ask)) if ask > bid => Some(ask - bid),
             _ => None,
         }
@@ -337,8 +306,8 @@ impl Default for OrderBook {
 impl std::fmt::Debug for OrderBook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OrderBook")
-            .field("best_bid", &self.best_bid)
-            .field("best_ask", &self.best_ask)
+            .field("best_bid", &self.best_bid())
+            .field("best_ask", &self.best_ask())
             .field("bid_levels", &self.bids.len())
             .field("ask_levels", &self.asks.len())
             .field("order_count", &self.order_map.len())

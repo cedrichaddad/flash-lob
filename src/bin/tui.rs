@@ -8,20 +8,25 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 use std::{io, time::Duration};
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use flash_lob::{Engine, Command, PlaceOrder, Side, OrderType};
 
-// Shared statistics for the Snapshot Pattern
+// [NEW] A Snapshot of the top levels to share with the UI
+#[derive(Default, Clone)]
+struct BookSnapshot {
+    bids: Vec<(u64, u32)>, // (Price, Qty)
+    asks: Vec<(u64, u32)>,
+}
+
 struct SharedStats {
     ops_count: AtomicU64,
     p99_latency_ns: AtomicU64,
     arena_used: AtomicU64,
     arena_capacity: AtomicU64,
-    bid_depth: AtomicU64,
-    ask_depth: AtomicU64,
-    last_trade_price: AtomicU64,
-    last_trade_qty: AtomicU64,
+    // [NEW] The actual book data (protected by a lock)
+    book_snapshot: RwLock<BookSnapshot>,
 }
 
 impl SharedStats {
@@ -31,12 +36,35 @@ impl SharedStats {
             p99_latency_ns: AtomicU64::new(0),
             arena_used: AtomicU64::new(0),
             arena_capacity: AtomicU64::new(capacity),
-            bid_depth: AtomicU64::new(0),
-            ask_depth: AtomicU64::new(0),
-            last_trade_price: AtomicU64::new(0),
-            last_trade_qty: AtomicU64::new(0),
+            // Initialize empty
+            book_snapshot: RwLock::new(BookSnapshot::default()),
         }
     }
+}
+
+// Helper to generate the ASCII Bar string
+fn render_level_bars(levels: &[(u64, u32)], side: Side, _max_width: usize) -> String {
+    let mut out = String::new();
+    let max_qty = levels.iter().map(|(_, q)| *q).max().unwrap_or(1) as f32;
+
+    for (price, qty) in levels.iter().take(15) { // Show top 15
+        let price_fmt = format!("{:.2}", *price as f64 / 100.0); // Assuming $100.00 fixed point
+        
+        // Calculate bar length (e.g., 20 chars max)
+        let bar_len = ((*qty as f32 / max_qty) * 20.0) as usize;
+        let bar = "█".repeat(bar_len);
+        // let _space = " ".repeat(20 - bar_len);
+        
+        let line = if side == Side::Bid {
+            // Bid: Price | Bar | Qty
+            format!("{:>8} {} {:<5}\n", price_fmt, bar, qty)
+        } else {
+            // Ask: Price | Bar | Qty
+            format!("{:>8} {} {:<5}\n", price_fmt, bar, qty)
+        };
+        out.push_str(&line);
+    }
+    out
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -59,7 +87,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         let mut order_id = 1u64;
         let mut rng = 12345u64; // Simple LCG for speed
+        let mut loop_count = 0u64; // Deterministic counter for snapshots
         
+        // [NEW] Start at $3,000.00 (Fixed point: 300,000)
+        let mut current_mid_price = 300_000u64; 
+
         loop {
             // Batch processing to reduce atomic contention overhead
             const BATCH_SIZE: u64 = 1000;
@@ -69,23 +101,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
                 order_id = order_id.wrapping_add(1);
                 
-                let side = if rng % 2 == 0 { Side::Bid } else { Side::Ask };
-                let price = 10000 + (rng % 1000) as u64; // 100.00 - 110.00
-                let qty = 1 + (rng % 100) as u32;
+                // Use high 32 bits for better randomness (LCG low bits are poor)
+                let r = rng >> 32;
+
+                // [NEW] Random Walk Logic (Simulate Volatility)
+                // Apply drift to the mid-price (Brownian Motion)
+                if r % 100 == 0 { // 1% chance to drift per order for smoother action
+                    let drift = (r % 5) as i64 - 2; // -2, -1, 0, 1, 2
+                    // Add multiplier to drift to make it more visible? No, small steps are fine.
+                    // Let's allow slightly larger steps: -5 to +5
+                    let drift_mag = (r % 11) as i64 - 5; 
+                    current_mid_price = (current_mid_price as i64 + drift_mag).max(1000) as u64;
+                }
+
+                // Determine Side (50/50 bid/ask)
+                let side = if r % 2 == 0 { Side::Bid } else { Side::Ask };
                 
-                // 50% Limit, 50% IOC/Market-like match
-                let is_taker = (rng >> 10) % 10 == 0; 
-                let final_price = if is_taker {
-                    if side == Side::Bid { price + 50 } else { price - 50 }
+                // Place orders AROUND the mid-price (Spread generation)
+                // Spread can be tight or wide.
+                // 100 to 500 spread ($1.00 to $5.00)
+                let spread_dist = 100 + (r % 400); 
+                let spread_offset = spread_dist / 2;
+                
+                // Add some noise to specific order price
+                let noise = (r % 20) as i64 - 10;
+                
+                let base_price = if side == Side::Bid {
+                   current_mid_price.saturating_sub(spread_offset)
                 } else {
-                    price
+                   current_mid_price.saturating_add(spread_offset)
                 };
+                
+                let price = (base_price as i64 + noise).max(1) as u64;
+
+                let qty = 1 + (rng % 100) as u32; // 0.01 to 1.00 ETH size
 
                 let cmd = Command::Place(PlaceOrder {
                     order_id,
                     user_id: 1,
                     side,
-                    price: final_price,
+                    price,
                     qty,
                     order_type: OrderType::Limit,
                 });
@@ -93,6 +148,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 engine.process_command(cmd);
             }
             
+            loop_count += 1;
+
             // Update stats
             stats_clone.ops_count.fetch_add(BATCH_SIZE, Ordering::Relaxed);
             
@@ -100,19 +157,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let elapsed = start_batch.elapsed();
             let ns_per_op = elapsed.as_nanos() as u64 / BATCH_SIZE;
             stats_clone.p99_latency_ns.store(ns_per_op, Ordering::Relaxed); // Actually Avg, but good for demo
-            
-            // Snapshot simple metrics
             stats_clone.arena_used.store(engine.order_count() as u64, Ordering::Relaxed);
-            stats_clone.bid_depth.store(engine.matcher.book.bids.len() as u64, Ordering::Relaxed);
-            stats_clone.ask_depth.store(engine.matcher.book.asks.len() as u64, Ordering::Relaxed);
+
+            // [NEW] Publish Snapshot (Only once per batch/loop iteration)
+            // Use loop_count to guarantee updates every 50 batches (approx 5ms at 10M ops/sec)
+            if loop_count % 50 == 0 { 
+                if let Ok(mut write_guard) = stats_clone.book_snapshot.write() {
+                    // Extract Top 15 Bids/Asks manually
+                    write_guard.bids = engine.matcher.book.bids.iter()
+                        .rev().take(15).map(|(p, l)| (*p, l.total_qty as u32)).collect();
+                    write_guard.asks = engine.matcher.book.asks.iter()
+                        .take(15).map(|(p, l)| (*p, l.total_qty as u32)).collect();
+                }
+            }
             
             // Reset if full
             if engine.order_count() > (capacity as usize) * 9 / 10 {
                 engine = Engine::new(capacity); // Hard reset for demo loop
             }
-            
-            // Yield slightly to let UI thread breathe if single core (unlikely)
-            // thread::yield_now(); 
         }
     });
 
@@ -155,7 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .split(f.size());
 
             // 1. Header
-            let header = Block::default().borders(Borders::ALL).title("FLASH-LOB Crypto Demo");
+            let header = Block::default().borders(Borders::ALL).title("FLASH-LOB Crypto Demo (Brownian)");
             let title = Paragraph::new("ETH-USD | Press 'q' to quit")
                 .block(header)
                 .alignment(Alignment::Center)
@@ -168,17 +230,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(chunks[1]);
                 
-            let bid_depth = stats.bid_depth.load(Ordering::Relaxed);
-            let ask_depth = stats.ask_depth.load(Ordering::Relaxed);
+            // [NEW] Render the Bars
+            let snapshot = stats.book_snapshot.read().unwrap();
+            
+            let bids_text = render_level_bars(&snapshot.bids, Side::Bid, 30);
+            let asks_text = render_level_bars(&snapshot.asks, Side::Ask, 30);
 
-            let bids = Paragraph::new(format!("BIDS\n\nActive Levels: {}\n\n(Synthetic Visualization)", bid_depth))
-                .block(Block::default().borders(Borders::ALL).style(Style::default().fg(Color::Green)));
-                
-            let asks = Paragraph::new(format!("ASKS\n\nActive Levels: {}\n\n(Synthetic Visualization)", ask_depth))
-                .block(Block::default().borders(Borders::ALL).style(Style::default().fg(Color::Red)));
+            let bids_widget = Paragraph::new(bids_text)
+                .block(Block::default().borders(Borders::ALL).title("BIDS").style(Style::default().fg(Color::Green)));
+            
+            let asks_widget = Paragraph::new(asks_text)
+                .block(Block::default().borders(Borders::ALL).title("ASKS").style(Style::default().fg(Color::Red)));
 
-            f.render_widget(bids, book_chunks[0]);
-            f.render_widget(asks, book_chunks[1]);
+            f.render_widget(bids_widget, book_chunks[0]);
+            f.render_widget(asks_widget, book_chunks[1]);
 
             // 3. Stats
             let ops_fmt = if throughput > 1_000_000.0 {

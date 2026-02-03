@@ -3,6 +3,8 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use chrono::{DateTime, Utc};
 use crate::command::Side;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Deserialize)]
 pub struct TardisL3Row {
@@ -10,9 +12,9 @@ pub struct TardisL3Row {
     pub side: Option<String>,
     pub price: Option<Decimal>,
     pub amount: Option<Decimal>,
-    pub order_id: Option<u64>, // Tardis L3 order_ids are usually numeric, but string in CSV
+    pub order_id: Option<String>, // Changed to String to handle UUIDs
     pub trade_id: Option<u64>,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Option<DateTime<Utc>>,
     pub local_timestamp: Option<u64>,
 }
 
@@ -67,11 +69,11 @@ impl TardisL3Row {
         let price = self.price.map(|d| (d * Decimal::from(price_mult)).to_u64().unwrap_or(0));
         let qty = self.amount.map(|d| (d * Decimal::from(100000000u64)).to_u32().unwrap_or(0)); // Assuming max 8 decimals for size
         
-        // Note: Tardis L3 uses integer order IDs for Coinbase usually? verify. 
-        // If string UUIDs, we need a hash map mapping. 
-        // Assuming integer for now based on Flash-LOB u64 requirement. 
-        // If real data has UUIDs, we'll need a mapping layer in the replay harness.
-        let order_id = self.order_id.unwrap_or(0);
+        // Hash the UUID string to a u64
+        let raw_id = self.order_id.as_deref().unwrap_or("0");
+        let mut hasher = DefaultHasher::new();
+        raw_id.hash(&mut hasher);
+        let order_id = hasher.finish();
         
         match self.r#type.as_str() {
             "received" => Some(CoinbaseMessage::Received {
@@ -97,7 +99,7 @@ impl TardisL3Row {
                 })
             },
             "match" => Some(CoinbaseMessage::Match {
-                maker_order_id: self.order_id.unwrap_or(0), // Maker
+                maker_order_id: order_id, // For match, order_id is usually maker
                 taker_order_id: self.trade_id.unwrap_or(0), // Taker/Trade ID? Validation requires care
                 price: price.unwrap_or(0),
                 qty: qty.unwrap_or(0),
