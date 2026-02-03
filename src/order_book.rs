@@ -20,6 +20,8 @@ pub struct OrderInfo {
     pub side: Side,
     /// Price level (needed for cancel to find the PriceLevel)
     pub price: u64,
+    /// User ID (needed for modify order)
+    pub user_id: u64,
 }
 
 /// Sparse Order Book using HashMaps for price levels.
@@ -28,9 +30,9 @@ pub struct OrderInfo {
 /// Uses FxHashMap for fast non-cryptographic hashing.
 pub struct OrderBook {
     /// Bid price levels (buy orders)
-    bids: FxHashMap<u64, PriceLevel>,
+    pub bids: FxHashMap<u64, PriceLevel>,
     /// Ask price levels (sell orders)
-    asks: FxHashMap<u64, PriceLevel>,
+    pub asks: FxHashMap<u64, PriceLevel>,
     /// Cached best bid price (highest buy price)
     best_bid: Option<u64>,
     /// Cached best ask price (lowest sell price)
@@ -146,6 +148,7 @@ impl OrderBook {
         &mut self,
         arena: &mut Arena,
         order_id: u64,
+        user_id: u64,
         side: Side,
         price: u64,
         arena_index: ArenaIndex,
@@ -160,6 +163,7 @@ impl OrderBook {
             arena_index,
             side,
             price,
+            user_id,
         });
         
         // Add to price level
@@ -372,7 +376,7 @@ mod tests {
         let mut book = OrderBook::new();
         
         let idx = create_order(&mut arena, 1, 10000, 100);
-        assert!(book.add_order(&mut arena, 1, Side::Bid, 10000, idx));
+        assert!(book.add_order(&mut arena, 1, 1, Side::Bid, 10000, idx));
         
         assert_eq!(book.best_bid(), Some(10000));
         assert_eq!(book.best_ask(), None);
@@ -386,7 +390,7 @@ mod tests {
         let mut book = OrderBook::new();
         
         let idx = create_order(&mut arena, 1, 10100, 100);
-        assert!(book.add_order(&mut arena, 1, Side::Ask, 10100, idx));
+        assert!(book.add_order(&mut arena, 1, 1, Side::Ask, 10100, idx));
         
         assert_eq!(book.best_bid(), None);
         assert_eq!(book.best_ask(), Some(10100));
@@ -403,23 +407,23 @@ mod tests {
         let idx2 = create_order(&mut arena, 2, 10050, 100);
         let idx3 = create_order(&mut arena, 3, 9950, 100);
         
-        book.add_order(&mut arena, 1, Side::Bid, 10000, idx1);
+        book.add_order(&mut arena, 1, 1, Side::Bid, 10000, idx1);
         assert_eq!(book.best_bid(), Some(10000));
         
-        book.add_order(&mut arena, 2, Side::Bid, 10050, idx2);
+        book.add_order(&mut arena, 2, 1, Side::Bid, 10050, idx2);
         assert_eq!(book.best_bid(), Some(10050)); // Higher is better for bids
         
-        book.add_order(&mut arena, 3, Side::Bid, 9950, idx3);
+        book.add_order(&mut arena, 3, 1, Side::Bid, 9950, idx3);
         assert_eq!(book.best_bid(), Some(10050)); // Still 10050
         
         // Add asks
         let idx4 = create_order(&mut arena, 4, 10100, 100);
         let idx5 = create_order(&mut arena, 5, 10080, 100);
         
-        book.add_order(&mut arena, 4, Side::Ask, 10100, idx4);
+        book.add_order(&mut arena, 4, 1, Side::Ask, 10100, idx4);
         assert_eq!(book.best_ask(), Some(10100));
         
-        book.add_order(&mut arena, 5, Side::Ask, 10080, idx5);
+        book.add_order(&mut arena, 5, 1, Side::Ask, 10080, idx5);
         assert_eq!(book.best_ask(), Some(10080)); // Lower is better for asks
     }
     
@@ -431,8 +435,8 @@ mod tests {
         let idx1 = create_order(&mut arena, 1, 10000, 100);
         let idx2 = create_order(&mut arena, 2, 10100, 100);
         
-        book.add_order(&mut arena, 1, Side::Bid, 10000, idx1);
-        book.add_order(&mut arena, 2, Side::Ask, 10100, idx2);
+        book.add_order(&mut arena, 1, 1, Side::Bid, 10000, idx1);
+        book.add_order(&mut arena, 2, 1, Side::Ask, 10100, idx2);
         
         assert_eq!(book.spread(), Some(100));
     }
@@ -445,8 +449,8 @@ mod tests {
         let idx1 = create_order(&mut arena, 1, 10000, 100);
         let idx2 = create_order(&mut arena, 1, 10050, 100); // Same order_id
         
-        assert!(book.add_order(&mut arena, 1, Side::Bid, 10000, idx1));
-        assert!(!book.add_order(&mut arena, 1, Side::Bid, 10050, idx2)); // Should fail
+        assert!(book.add_order(&mut arena, 1, 1, Side::Bid, 10000, idx1));
+        assert!(!book.add_order(&mut arena, 1, 1, Side::Bid, 10050, idx2)); // Should fail
         
         assert_eq!(book.order_count(), 1);
     }
@@ -457,7 +461,7 @@ mod tests {
         let mut book = OrderBook::new();
         
         let idx = create_order(&mut arena, 1, 10000, 100);
-        book.add_order(&mut arena, 1, Side::Bid, 10000, idx);
+        book.add_order(&mut arena, 1, 1, Side::Bid, 10000, idx);
         
         let info = book.remove_order(&mut arena, 1);
         assert!(info.is_some());
@@ -488,9 +492,9 @@ mod tests {
         let idx2 = create_order(&mut arena, 2, 10000, 100);
         let idx3 = create_order(&mut arena, 3, 9950, 100);
         
-        book.add_order(&mut arena, 1, Side::Bid, 10050, idx1);
-        book.add_order(&mut arena, 2, Side::Bid, 10000, idx2);
-        book.add_order(&mut arena, 3, Side::Bid, 9950, idx3);
+        book.add_order(&mut arena, 1, 1, Side::Bid, 10050, idx1);
+        book.add_order(&mut arena, 2, 1, Side::Bid, 10000, idx2);
+        book.add_order(&mut arena, 3, 1, Side::Bid, 9950, idx3);
         
         assert_eq!(book.best_bid(), Some(10050));
         
@@ -517,9 +521,9 @@ mod tests {
         let idx2 = create_order(&mut arena, 2, 10000, 200);
         let idx3 = create_order(&mut arena, 3, 10000, 300);
         
-        book.add_order(&mut arena, 1, Side::Bid, 10000, idx1);
-        book.add_order(&mut arena, 2, Side::Bid, 10000, idx2);
-        book.add_order(&mut arena, 3, Side::Bid, 10000, idx3);
+        book.add_order(&mut arena, 1, 1, Side::Bid, 10000, idx1);
+        book.add_order(&mut arena, 2, 1, Side::Bid, 10000, idx2);
+        book.add_order(&mut arena, 3, 1, Side::Bid, 10000, idx3);
         
         assert_eq!(book.order_count(), 3);
         assert_eq!(book.bid_levels(), 1);
@@ -551,8 +555,8 @@ mod tests {
         let idx1 = create_order(&mut arena, 1, 10000, 100);
         let idx2 = create_order(&mut arena, 2, 10000, 250);
         
-        book.add_order(&mut arena, 1, Side::Bid, 10000, idx1);
-        book.add_order(&mut arena, 2, Side::Bid, 10000, idx2);
+        book.add_order(&mut arena, 1, 1, Side::Bid, 10000, idx1);
+        book.add_order(&mut arena, 2, 1, Side::Bid, 10000, idx2);
         
         assert_eq!(book.depth_at(Side::Bid, 10000), (350, 2));
     }

@@ -18,16 +18,17 @@ pub type ArenaIndex = u32;
 ///
 /// # Memory Layout
 ///
-/// | Field      | Type   | Offset | Size |
-/// |------------|--------|--------|------|
-/// | price      | u64    | 0      | 8    |
-/// | qty        | u32    | 8      | 4    |
-/// | order_id   | u64    | 16     | 8    |
-/// | user_id    | u64    | 24     | 8    |
-/// | next       | u32    | 32     | 4    |
-/// | prev       | u32    | 36     | 4    |
-/// | _reserved  | [u8;28]| 36     | 28   |
-/// | **Total**  |        |        | 64   |
+/// | Field      | Type    | Offset | Size |
+/// |------------|---------|--------|------|
+/// | price      | u64     | 0      | 8    |
+/// | qty        | u32     | 8      | 4    |
+/// | (padding)  | -       | 12     | 4    |
+/// | order_id   | u64     | 16     | 8    |
+/// | user_id    | u64     | 24     | 8    |
+/// | next       | u32     | 32     | 4    |
+/// | prev       | u32     | 36     | 4    |
+/// | _reserved  | [u8;24] | 40     | 24   |
+/// | **Total**  |         |        | 64   |
 ///
 /// Note: There's 4 bytes of padding after `qty` due to u64 alignment.
 #[repr(C)]

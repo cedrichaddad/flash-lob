@@ -7,7 +7,7 @@
 //! - Mixed workload
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use flash_lob::{Engine, Command, PlaceOrder, CancelOrder, Side};
+use flash_lob::{Engine, Command, PlaceOrder, CancelOrder, Side, OrderType};
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 
@@ -19,6 +19,7 @@ fn random_place(rng: &mut ChaCha8Rng, order_id: u64) -> Command {
         side: if rng.gen_bool(0.5) { Side::Bid } else { Side::Ask },
         price: rng.gen_range(9900..10100) * 100, // 990.00 to 1010.00
         qty: rng.gen_range(1..1000),
+        order_type: OrderType::Limit,
     })
 }
 
@@ -38,6 +39,7 @@ fn bench_place_no_match(c: &mut Criterion) {
                 side: Side::Bid,
                 price: 9000, // Below any asks
                 qty: 100,
+                order_type: OrderType::Limit,
             });
             black_box(engine.process_command(cmd))
         })
@@ -61,6 +63,7 @@ fn bench_place_full_match(c: &mut Criterion) {
                     side: Side::Ask,
                     price: 10000,
                     qty: 100,
+                    order_type: OrderType::Limit,
                 }));
             }
             
@@ -75,6 +78,7 @@ fn bench_place_full_match(c: &mut Criterion) {
                     side: Side::Bid,
                     price: 10000,
                     qty: 100,
+                    order_type: OrderType::Limit,
                 });
                 let result = engine.process_command(cmd);
                 
@@ -85,6 +89,7 @@ fn bench_place_full_match(c: &mut Criterion) {
                     side: Side::Ask,
                     price: 10000,
                     qty: 100,
+                    order_type: OrderType::Limit,
                 }));
                 
                 black_box(result)
@@ -112,6 +117,7 @@ fn bench_cancel(c: &mut Criterion) {
                     side: if i % 2 == 0 { Side::Bid } else { Side::Ask },
                     price: 9000 + (i % 100) as u64 * 10,
                     qty: 100,
+                    order_type: OrderType::Limit,
                 }));
             }
             
@@ -131,6 +137,7 @@ fn bench_cancel(c: &mut Criterion) {
                     side: if cancel_id % 2 == 0 { Side::Bid } else { Side::Ask },
                     price: 9000 + (cancel_id % 100) * 10,
                     qty: 100,
+                    order_type: OrderType::Limit,
                 }));
                 
                 cancel_id = next_order_id;

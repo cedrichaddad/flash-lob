@@ -26,7 +26,7 @@ pub mod engine;
 
 // Re-exports for convenience
 pub use arena::{Arena, ArenaIndex, OrderNode, NULL_INDEX};
-pub use command::{Command, PlaceOrder, CancelOrder, Side, TradeEvent, BookUpdate, OutputEvent};
+pub use command::{Command, PlaceOrder, CancelOrder, ModifyOrder, OrderType, Side, TradeEvent, BookUpdate, OutputEvent};
 pub use price_level::PriceLevel;
 pub use order_book::OrderBook;
 pub use engine::Engine;

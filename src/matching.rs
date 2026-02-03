@@ -7,7 +7,7 @@
 use crate::arena::{Arena, ArenaIndex, NULL_INDEX};
 use crate::command::{
     BookUpdate, CancelOrder, OutputEvent, PlaceOrder, Side, TradeEvent,
-    OrderAccepted, OrderCanceled, OrderRejected, RejectReason,
+    OrderAccepted, OrderCanceled, OrderRejected, RejectReason, OrderType,
 };
 use crate::order_book::OrderBook;
 
@@ -45,11 +45,14 @@ impl MatchingEngine {
     ///
     /// # Algorithm
     /// 1. Check for duplicate order ID
-    /// 2. Attempt to cross (match) against opposite side
-    /// 3. If quantity remains, rest the order in the book
+    /// 2. For FOK: Check if entire order can be filled before matching
+    /// 3. Attempt to cross (match) against opposite side
+    /// 4. For IOC: Cancel any unfilled portion (don't rest)
+    /// 5. For Limit: Rest unfilled portion in the book
     ///
     /// # Returns
     /// Vector of output events (trades, book updates, etc.)
+    #[must_use]
     pub fn process_place(&mut self, order: PlaceOrder) -> Vec<OutputEvent> {
         let mut events = Vec::new();
         
@@ -71,25 +74,79 @@ impl MatchingEngine {
             return events;
         }
         
+        // For FOK orders: Check if we can fill the entire quantity
+        if order.order_type == OrderType::FOK {
+            let available = self.calculate_available_qty(&order);
+            if available < order.qty {
+                events.push(OutputEvent::Rejected(OrderRejected {
+                    order_id: order.order_id,
+                    reason: RejectReason::InsufficientLiquidity,
+                }));
+                return events;
+            }
+        }
+        
         let mut remaining_qty = order.qty;
         
         // Phase 1: CROSSING (aggressive matching)
         remaining_qty = self.cross_order(&order, remaining_qty, &mut events);
         
-        // Phase 2: RESTING (passive posting)
+        // Phase 2: Handle remaining quantity based on order type
         if remaining_qty > 0 {
-            if let Some(_arena_idx) = self.rest_order(&order, remaining_qty, &mut events) {
-                // Order is now resting
-            } else {
-                // Arena is full
-                events.push(OutputEvent::Rejected(OrderRejected {
-                    order_id: order.order_id,
-                    reason: RejectReason::ArenaFull,
-                }));
+            match order.order_type {
+                OrderType::Limit => {
+                    // Rest the order in the book
+                    if let Some(_arena_idx) = self.rest_order(&order, remaining_qty, &mut events) {
+                        // Order is now resting
+                    } else {
+                        // Arena is full
+                        events.push(OutputEvent::Rejected(OrderRejected {
+                            order_id: order.order_id,
+                            reason: RejectReason::ArenaFull,
+                        }));
+                    }
+                }
+                OrderType::IOC => {
+                    // IOC: Cancel unfilled portion silently (no resting)
+                    // We don't emit a cancel event since the order never rested
+                }
+                OrderType::FOK => {
+                    // This shouldn't happen since we pre-checked availability
+                    // but handle it gracefully
+                    unreachable!("FOK order should have been fully filled or rejected");
+                }
             }
         }
         
         events
+    }
+    
+    /// Calculate the total available quantity at prices that cross with the order.
+    /// Used for FOK order validation.
+    fn calculate_available_qty(&self, order: &PlaceOrder) -> u32 {
+        let mut available = 0u32;
+        
+        // Iterate through opposite side levels
+        match order.side {
+            Side::Bid => {
+                // For a bid, check all ask levels <= order price
+                for (&price, level) in self.book.asks.iter() {
+                    if price <= order.price {
+                        available = available.saturating_add(level.total_qty as u32);
+                    }
+                }
+            }
+            Side::Ask => {
+                // For an ask, check all bid levels >= order price
+                for (&price, level) in self.book.bids.iter() {
+                    if price >= order.price {
+                        available = available.saturating_add(level.total_qty as u32);
+                    }
+                }
+            }
+        }
+        
+        available
     }
     
     /// Cross (match) an incoming order against the opposite side.
@@ -275,6 +332,7 @@ impl MatchingEngine {
         self.book.add_order(
             &mut self.arena,
             order.order_id,
+            order.user_id,
             order.side,
             order.price,
             arena_idx,
@@ -379,7 +437,14 @@ impl MatchingEngine {
         self.arena.warm_up();
     }
     
-    /// Compute a hash of the current state (for determinism testing)
+    /// Compute a comprehensive hash of the current state (for determinism testing).
+    ///
+    /// This hash captures:
+    /// - Best bid and ask prices
+    /// - Total order count
+    /// - All bid price levels with their total quantities
+    /// - All ask price levels with their total quantities
+    #[must_use]
     pub fn state_hash(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -393,6 +458,28 @@ impl MatchingEngine {
         // Hash order count and arena state
         self.book.order_count().hash(&mut hasher);
         self.arena.allocated().hash(&mut hasher);
+        
+        // Hash all bid levels (sorted by price for consistency)
+        let mut bid_prices: Vec<_> = self.book.bids.keys().copied().collect();
+        bid_prices.sort_unstable();
+        for price in bid_prices {
+            price.hash(&mut hasher);
+            if let Some(level) = self.book.bids.get(&price) {
+                level.total_qty.hash(&mut hasher);
+                level.count.hash(&mut hasher);
+            }
+        }
+        
+        // Hash all ask levels (sorted by price for consistency)
+        let mut ask_prices: Vec<_> = self.book.asks.keys().copied().collect();
+        ask_prices.sort_unstable();
+        for price in ask_prices {
+            price.hash(&mut hasher);
+            if let Some(level) = self.book.asks.get(&price) {
+                level.total_qty.hash(&mut hasher);
+                level.count.hash(&mut hasher);
+            }
+        }
         
         hasher.finish()
     }
@@ -415,6 +502,7 @@ mod tests {
             side,
             price,
             qty,
+            order_type: OrderType::Limit,
         }
     }
     
@@ -687,5 +775,174 @@ mod tests {
         assert_eq!(trades[0].price, 10000);
         assert_eq!(trades[1].price, 10010);
         assert_eq!(trades[2].price, 10020);
+    }
+    
+    // =========================================================================
+    // IOC (Immediate-Or-Cancel) Order Type Tests
+    // =========================================================================
+    
+    fn ioc_order(
+        order_id: u64,
+        user_id: u64,
+        side: Side,
+        price: u64,
+        qty: u32,
+    ) -> PlaceOrder {
+        PlaceOrder {
+            order_id,
+            user_id,
+            side,
+            price,
+            qty,
+            order_type: OrderType::IOC,
+        }
+    }
+    
+    #[test]
+    fn test_ioc_full_fill() {
+        let mut engine = MatchingEngine::new(1000);
+        
+        // Place a resting ask
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 100));
+        
+        // IOC bid that fully matches
+        let events = engine.process_place(ioc_order(2, 200, Side::Bid, 10000, 100));
+        
+        let trades = events.iter()
+            .filter(|e| matches!(e, OutputEvent::Trade(_)))
+            .count();
+        
+        assert_eq!(trades, 1);
+        assert_eq!(engine.order_count(), 0); // No resting orders
+    }
+    
+    #[test]
+    fn test_ioc_partial_fill_no_rest() {
+        let mut engine = MatchingEngine::new(1000);
+        
+        // Place a small resting ask
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 50));
+        
+        // IOC bid that partially matches - unfilled portion should be canceled
+        let events = engine.process_place(ioc_order(2, 200, Side::Bid, 10000, 100));
+        
+        let trades = events.iter()
+            .filter(|e| matches!(e, OutputEvent::Trade(_)))
+            .count();
+        
+        assert_eq!(trades, 1); // One trade for 50 qty
+        assert_eq!(engine.order_count(), 0); // IOC order should NOT rest
+    }
+    
+    #[test]
+    fn test_ioc_no_match_no_rest() {
+        let mut engine = MatchingEngine::new(1000);
+        
+        // Place an ask above the IOC bid price
+        engine.process_place(place_order(1, 100, Side::Ask, 10100, 100));
+        
+        // IOC bid that doesn't cross
+        let events = engine.process_place(ioc_order(2, 200, Side::Bid, 10000, 100));
+        
+        // Should have no trades, no accepted (IOC doesn't rest)
+        let trades = events.iter().filter(|e| matches!(e, OutputEvent::Trade(_))).count();
+        let accepted = events.iter().filter(|e| matches!(e, OutputEvent::Accepted(_))).count();
+        
+        assert_eq!(trades, 0);
+        assert_eq!(accepted, 0);
+        assert_eq!(engine.order_count(), 1); // Only the original ask
+    }
+    
+    // =========================================================================
+    // FOK (Fill-Or-Kill) Order Type Tests
+    // =========================================================================
+    
+    fn fok_order(
+        order_id: u64,
+        user_id: u64,
+        side: Side,
+        price: u64,
+        qty: u32,
+    ) -> PlaceOrder {
+        PlaceOrder {
+            order_id,
+            user_id,
+            side,
+            price,
+            qty,
+            order_type: OrderType::FOK,
+        }
+    }
+    
+    #[test]
+    fn test_fok_full_fill() {
+        let mut engine = MatchingEngine::new(1000);
+        
+        // Place enough liquidity
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 100));
+        
+        // FOK bid that fully matches
+        let events = engine.process_place(fok_order(2, 200, Side::Bid, 10000, 100));
+        
+        let trades = events.iter().filter(|e| matches!(e, OutputEvent::Trade(_))).count();
+        let rejected = events.iter().filter(|e| matches!(e, OutputEvent::Rejected(_))).count();
+        
+        assert_eq!(trades, 1);
+        assert_eq!(rejected, 0);
+        assert_eq!(engine.order_count(), 0);
+    }
+    
+    #[test]
+    fn test_fok_insufficient_liquidity_rejected() {
+        let mut engine = MatchingEngine::new(1000);
+        
+        // Place smaller liquidity than FOK needs
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 50));
+        
+        // FOK bid that can't fully fill
+        let events = engine.process_place(fok_order(2, 200, Side::Bid, 10000, 100));
+        
+        let trades = events.iter().filter(|e| matches!(e, OutputEvent::Trade(_))).count();
+        let rejected = events.iter()
+            .filter_map(|e| if let OutputEvent::Rejected(r) = e { Some(r) } else { None })
+            .collect::<Vec<_>>();
+        
+        assert_eq!(trades, 0); // No trades - order was rejected
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].reason, crate::command::RejectReason::InsufficientLiquidity);
+        assert_eq!(engine.order_count(), 1); // Original ask still there
+    }
+    
+    #[test]
+    fn test_fok_no_liquidity_rejected() {
+        let mut engine = MatchingEngine::new(1000);
+        
+        // No resting orders
+        
+        // FOK bid with no matching liquidity
+        let events = engine.process_place(fok_order(1, 200, Side::Bid, 10000, 100));
+        
+        let rejected = events.iter().filter(|e| matches!(e, OutputEvent::Rejected(_))).count();
+        
+        assert_eq!(rejected, 1);
+        assert_eq!(engine.order_count(), 0);
+    }
+    
+    #[test]
+    fn test_fok_multi_level_fill() {
+        let mut engine = MatchingEngine::new(1000);
+        
+        // Place liquidity across multiple levels
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 30));
+        engine.process_place(place_order(2, 100, Side::Ask, 10010, 40));
+        engine.process_place(place_order(3, 100, Side::Ask, 10020, 50));
+        
+        // FOK bid that can fill across levels
+        let events = engine.process_place(fok_order(4, 200, Side::Bid, 10020, 100));
+        
+        let trades = events.iter().filter(|e| matches!(e, OutputEvent::Trade(_))).count();
+        
+        assert_eq!(trades, 3); // Matched all 3 levels
+        assert_eq!(engine.order_count(), 1); // 20 remaining at 10020
     }
 }

@@ -138,6 +138,7 @@ fn generate_command(rng: &mut ChaCha8Rng, order_id: u64) -> PlaceOrder {
         side: if rng.gen_bool(0.5) { Side::Bid } else { Side::Ask },
         price: rng.gen_range(9800..10200) * 100,
         qty: rng.gen_range(1..200),
+        order_type: flash_lob::OrderType::Limit,
     }
 }
 

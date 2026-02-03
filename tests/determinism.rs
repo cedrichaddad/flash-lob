@@ -23,7 +23,7 @@ fn generate_commands(seed: u64, count: usize) -> Vec<Command> {
             let order_id = next_order_id;
             next_order_id += 1;
             
-            commands.push(Command::Place(PlaceOrder {
+            commands.push(Command::Place(PlaceOrder { order_type: flash_lob::OrderType::Limit,
                 order_id,
                 user_id: rng.gen_range(1..100),
                 side: if rng.gen_bool(0.5) { Side::Bid } else { Side::Ask },

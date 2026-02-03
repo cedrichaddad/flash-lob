@@ -67,25 +67,31 @@ impl Engine {
             Command::Place(order) => self.matcher.process_place(order),
             Command::Cancel(cancel) => self.matcher.process_cancel(cancel),
             Command::Modify(modify) => {
+                // First retrieve the original order info before canceling
+                let original_info = self.matcher.book.get_order(modify.order_id).copied();
+                
                 // Modify = Cancel + Place
                 let mut events = self.matcher.process_cancel(crate::command::CancelOrder {
                     order_id: modify.order_id,
                 });
                 
-                // Only place if cancel succeeded
+                // Only place if cancel succeeded and we had the original order info
                 let cancel_succeeded = events.iter().any(|e| {
                     matches!(e, OutputEvent::Canceled(_))
                 });
                 
                 if cancel_succeeded {
-                    let place_events = self.matcher.process_place(crate::command::PlaceOrder {
-                        order_id: modify.new_order_id,
-                        user_id: 0, // TODO: Need to store user_id in OrderInfo
-                        side: crate::command::Side::Bid, // TODO: Need to store side
-                        price: modify.new_price,
-                        qty: modify.new_qty,
-                    });
-                    events.extend(place_events);
+                    if let Some(info) = original_info {
+                        let place_events = self.matcher.process_place(crate::command::PlaceOrder {
+                            order_id: modify.new_order_id,
+                            user_id: info.user_id,
+                            side: info.side,
+                            price: modify.new_price,
+                            qty: modify.new_qty,
+                            order_type: crate::command::OrderType::Limit,
+                        });
+                        events.extend(place_events);
+                    }
                 }
                 
                 events
@@ -149,7 +155,7 @@ impl Default for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{PlaceOrder, CancelOrder, Side};
+    use crate::command::{PlaceOrder, CancelOrder, Side, OrderType};
     
     #[test]
     fn test_engine_creation() {
@@ -169,6 +175,7 @@ mod tests {
             side: Side::Bid,
             price: 10000,
             qty: 100,
+            order_type: OrderType::Limit,
         });
         
         let events = engine.process_command(cmd);
@@ -188,6 +195,7 @@ mod tests {
             side: Side::Bid,
             price: 10000,
             qty: 100,
+            order_type: OrderType::Limit,
         }));
         
         // Cancel
@@ -212,6 +220,7 @@ mod tests {
                 side: if i % 2 == 0 { Side::Bid } else { Side::Ask },
                 price: 10000 + (i % 10) * 10,
                 qty: 100,
+                order_type: OrderType::Limit,
             });
             engine1.process_command(cmd);
             engine2.process_command(cmd);

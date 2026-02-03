@@ -28,6 +28,19 @@ impl Side {
 // Input Commands
 // ============================================================================
 
+/// Order type determines matching behavior
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum OrderType {
+    /// Limit order - rests in book if not fully matched (default)
+    #[default]
+    Limit = 0,
+    /// Immediate-Or-Cancel - cancel any unfilled portion immediately
+    IOC = 1,
+    /// Fill-Or-Kill - all-or-nothing execution, reject if can't fully fill
+    FOK = 2,
+}
+
 /// Place a new limit order
 #[derive(Clone, Copy, Debug)]
 pub struct PlaceOrder {
@@ -41,6 +54,49 @@ pub struct PlaceOrder {
     pub price: u64,
     /// Order quantity
     pub qty: u32,
+    /// Order type (Limit, IOC, FOK)
+    pub order_type: OrderType,
+}
+
+impl PlaceOrder {
+    /// Create a new limit order (most common case)
+    #[inline]
+    pub const fn limit(order_id: u64, user_id: u64, side: Side, price: u64, qty: u32) -> Self {
+        Self {
+            order_id,
+            user_id,
+            side,
+            price,
+            qty,
+            order_type: OrderType::Limit,
+        }
+    }
+    
+    /// Create an Immediate-Or-Cancel order
+    #[inline]
+    pub const fn ioc(order_id: u64, user_id: u64, side: Side, price: u64, qty: u32) -> Self {
+        Self {
+            order_id,
+            user_id,
+            side,
+            price,
+            qty,
+            order_type: OrderType::IOC,
+        }
+    }
+    
+    /// Create a Fill-Or-Kill order
+    #[inline]
+    pub const fn fok(order_id: u64, user_id: u64, side: Side, price: u64, qty: u32) -> Self {
+        Self {
+            order_id,
+            user_id,
+            side,
+            price,
+            qty,
+            order_type: OrderType::FOK,
+        }
+    }
 }
 
 /// Cancel an existing order
@@ -148,6 +204,8 @@ pub enum RejectReason {
     InvalidPrice = 3,
     /// Invalid quantity
     InvalidQuantity = 4,
+    /// Not enough liquidity to fill FOK order
+    InsufficientLiquidity = 5,
 }
 
 /// Output events from the matching engine
@@ -183,9 +241,28 @@ mod tests {
             side: Side::Bid,
             price: 10050000,
             qty: 100,
+            order_type: OrderType::Limit,
         };
         assert_eq!(order.order_id, 1);
         assert_eq!(order.side, Side::Bid);
+        assert_eq!(order.order_type, OrderType::Limit);
+    }
+    
+    #[test]
+    fn test_place_order_constructors() {
+        let limit = PlaceOrder::limit(1, 100, Side::Bid, 10000, 50);
+        assert_eq!(limit.order_type, OrderType::Limit);
+        
+        let ioc = PlaceOrder::ioc(2, 100, Side::Ask, 10000, 50);
+        assert_eq!(ioc.order_type, OrderType::IOC);
+        
+        let fok = PlaceOrder::fok(3, 100, Side::Bid, 10000, 50);
+        assert_eq!(fok.order_type, OrderType::FOK);
+    }
+    
+    #[test]
+    fn test_order_type_default() {
+        assert_eq!(OrderType::default(), OrderType::Limit);
     }
     
     #[test]
@@ -196,6 +273,7 @@ mod tests {
             side: Side::Bid,
             price: 100,
             qty: 10,
+            order_type: OrderType::Limit,
         });
         
         let cancel = Command::Cancel(CancelOrder { order_id: 1 });
