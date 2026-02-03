@@ -41,7 +41,7 @@ fn bench_place_no_match(c: &mut Criterion) {
                 qty: 100,
                 order_type: OrderType::Limit,
             });
-            black_box(engine.process_command(cmd))
+            black_box(engine.process_command(cmd).len())
         })
     });
 }
@@ -80,7 +80,7 @@ fn bench_place_full_match(c: &mut Criterion) {
                     qty: 100,
                     order_type: OrderType::Limit,
                 });
-                let result = engine.process_command(cmd);
+                let result_len = engine.process_command(cmd).len();
                 
                 // Replenish the matched order
                 engine.process_command(Command::Place(PlaceOrder {
@@ -92,7 +92,7 @@ fn bench_place_full_match(c: &mut Criterion) {
                     order_type: OrderType::Limit,
                 }));
                 
-                black_box(result)
+                black_box(result_len)
             })
         });
     }
@@ -126,9 +126,9 @@ fn bench_cancel(c: &mut Criterion) {
             
             b.iter(|| {
                 // Cancel an order
-                let result = engine.process_command(Command::Cancel(CancelOrder {
+                let result_len = engine.process_command(Command::Cancel(CancelOrder {
                     order_id: cancel_id,
-                }));
+                })).len();
                 
                 // Replenish
                 engine.process_command(Command::Place(PlaceOrder {
@@ -143,7 +143,7 @@ fn bench_cancel(c: &mut Criterion) {
                 cancel_id = next_order_id;
                 next_order_id += 1;
                 
-                black_box(result)
+                black_box(result_len)
             })
         });
     }
@@ -173,13 +173,13 @@ fn bench_mixed_workload(c: &mut Criterion) {
             if rng.gen_bool(0.7) {
                 // Place
                 order_id += 1;
-                black_box(engine.process_command(random_place(&mut rng, order_id)))
+                black_box(engine.process_command(random_place(&mut rng, order_id)).len())
             } else {
                 // Cancel (random existing order)
                 let cancel_id = rng.gen_range(1..=order_id);
                 black_box(engine.process_command(Command::Cancel(CancelOrder {
                     order_id: cancel_id,
-                })))
+                })).len())
             }
         })
     });
@@ -201,7 +201,7 @@ fn bench_throughput(c: &mut Criterion) {
         b.iter(|| {
             for i in 0..1000 {
                 let cmd = random_place(&mut rng, i);
-                black_box(engine.process_command(cmd));
+                black_box(engine.process_command(cmd).len());
             }
             engine.matcher.book.clear();
         })

@@ -37,13 +37,15 @@ graph LR
 
 ## Performance (Benchmarks)
 
-Benchmarks run on Apple Silicon (M-Series):
+Benchmarks run on Apple Silicon (M2):
 
 | Operation | Latency (P99) | Throughput |
 |-----------|---------------|------------|
-| Place Order (No Match) | ~40 ns | 25M ops/sec |
-| Place Order (Match) | ~90 ns | 11M ops/sec |
-| Cancel Order | ~45 ns | 22M ops/sec |
+| Place Order (No Match) | ~11 ns | - |
+| Place Order (Full Match) | ~50 ns | - |
+| Cancel Order | ~66 ns | - |
+| Mixed Workload (70/30) | ~136 ns | - |
+| **Throughput** | - | **11.1M ops/sec** |
 
 *Benchmarks located in `benches/latency.rs`*
 
@@ -58,6 +60,7 @@ cargo run --release --bin tui-demo
 
 ### 2. L3 Data Replay (Coinbase)
 Replay real-world institutional market data (Market-by-Order) to validate the engine against production feeds.
+> **Verified Result:** Processed 5.1M messages with 74,109 validated matches.
 
 First, download sample data:
 ```bash
