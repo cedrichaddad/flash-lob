@@ -23,6 +23,7 @@ pub mod price_level;
 pub mod order_book;
 pub mod matching;
 pub mod engine;
+pub mod coinbase;
 
 // Re-exports for convenience
 pub use arena::{Arena, ArenaIndex, OrderNode, NULL_INDEX};

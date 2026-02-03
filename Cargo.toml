@@ -14,6 +14,14 @@ core_affinity = "0.8"       # CPU pinning for cache locality
 rustc-hash = "2"            # Fast non-cryptographic hashing (FxHash)
 rtrb = { version = "0.3", optional = true }  # Lock-free SPSC ring buffer
 arrayvec = "0.7"            # Stack-allocated vectors for hot path
+hdrhistogram = "7.5"
+csv = "1.3"
+serde = { version = "1.0", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = "1.36"
+ratatui = "0.26"
+crossterm = "0.27"
+tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -27,6 +35,18 @@ harness = false
 [[bench]]
 name = "extended"
 harness = false
+
+[[bin]]
+name = "latency-report"
+path = "src/bin/latency_report.rs"
+
+[[bin]]
+name = "replay"
+path = "src/bin/replay.rs"
+
+[[bin]]
+name = "tui-demo"
+path = "src/bin/tui.rs"
 
 [profile.release]
 lto = true
