@@ -515,7 +515,8 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         let order = place_order(1, 100, Side::Bid, 10000, 100);
-        let events = engine.process_place(order);
+        let mut events = Vec::new();
+        engine.process_place(order, &mut events);
         
         // Should get Accepted + BookDelta
         assert_eq!(events.len(), 2);
@@ -532,7 +533,8 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         let order = place_order(1, 100, Side::Ask, 10100, 100);
-        let events = engine.process_place(order);
+        let mut events = Vec::new();
+        engine.process_place(order, &mut events);
         
         assert_eq!(events.len(), 2);
         assert_eq!(engine.best_bid(), None);
@@ -545,11 +547,13 @@ mod tests {
         
         // Place resting ask
         let ask = place_order(1, 100, Side::Ask, 10000, 100);
-        engine.process_place(ask);
+        let mut events = Vec::new();
+        engine.process_place(ask, &mut events);
+        events.clear();
         
         // Place crossing bid
         let bid = place_order(2, 200, Side::Bid, 10000, 100);
-        let events = engine.process_place(bid);
+        engine.process_place(bid, &mut events);
         
         // Should get Trade + BookDelta (level removed)
         let trades: Vec<_> = events.iter()
@@ -577,11 +581,13 @@ mod tests {
         
         // Place small resting ask
         let ask = place_order(1, 100, Side::Ask, 10000, 50);
-        engine.process_place(ask);
+        let mut events = Vec::new();
+        engine.process_place(ask, &mut events);
+        events.clear();
         
         // Place larger crossing bid
         let bid = place_order(2, 200, Side::Bid, 10000, 100);
-        let events = engine.process_place(bid);
+        engine.process_place(bid, &mut events);
         
         // Should trade 50, then rest 50
         let trades: Vec<_> = events.iter()
@@ -616,11 +622,13 @@ mod tests {
         
         // Place large resting ask
         let ask = place_order(1, 100, Side::Ask, 10000, 100);
-        engine.process_place(ask);
+        let mut events = Vec::new();
+        engine.process_place(ask, &mut events);
+        events.clear();
         
         // Place smaller crossing bid
         let bid = place_order(2, 200, Side::Bid, 10000, 30);
-        engine.process_place(bid);
+        engine.process_place(bid, &mut events);
         
         // Maker should have 70 remaining
         assert_eq!(engine.order_count(), 1);
@@ -636,13 +644,15 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         // Place asks at multiple levels
-        engine.process_place(place_order(1, 100, Side::Ask, 10000, 50));
-        engine.process_place(place_order(2, 100, Side::Ask, 10010, 50));
-        engine.process_place(place_order(3, 100, Side::Ask, 10020, 50));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 50), &mut events);
+        engine.process_place(place_order(2, 100, Side::Ask, 10010, 50), &mut events);
+        engine.process_place(place_order(3, 100, Side::Ask, 10020, 50), &mut events);
+        events.clear(); // Clear setup events
         
         // Place large crossing bid
         let bid = place_order(4, 200, Side::Bid, 10020, 120);
-        let events = engine.process_place(bid);
+        engine.process_place(bid, &mut events);
         
         // Should match all of level 10000 (50), all of 10010 (50), part of 10020 (20)
         let trades: Vec<_> = events.iter()
@@ -667,11 +677,13 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         // Place order
-        engine.process_place(place_order(1, 100, Side::Bid, 10000, 100));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Bid, 10000, 100), &mut events);
         assert_eq!(engine.order_count(), 1);
+        events.clear();
         
         // Cancel it
-        let events = engine.process_cancel(CancelOrder { order_id: 1 });
+        engine.process_cancel(CancelOrder { order_id: 1 }, &mut events);
         
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], OutputEvent::Canceled(_)));
@@ -690,7 +702,8 @@ mod tests {
     fn test_cancel_nonexistent() {
         let mut engine = MatchingEngine::new(1000);
         
-        let events = engine.process_cancel(CancelOrder { order_id: 999 });
+        let mut events = Vec::new();
+        engine.process_cancel(CancelOrder { order_id: 999 }, &mut events);
         
         assert_eq!(events.len(), 1);
         assert!(matches!(
@@ -706,8 +719,10 @@ mod tests {
     fn test_duplicate_order_id() {
         let mut engine = MatchingEngine::new(1000);
         
-        engine.process_place(place_order(1, 100, Side::Bid, 10000, 100));
-        let events = engine.process_place(place_order(1, 200, Side::Ask, 10100, 50));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Bid, 10000, 100), &mut events);
+        events.clear();
+        engine.process_place(place_order(1, 200, Side::Ask, 10100, 50), &mut events);
         
         assert_eq!(events.len(), 1);
         assert!(matches!(
@@ -723,7 +738,8 @@ mod tests {
     fn test_zero_quantity_rejected() {
         let mut engine = MatchingEngine::new(1000);
         
-        let events = engine.process_place(place_order(1, 100, Side::Bid, 10000, 0));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Bid, 10000, 0), &mut events);
         
         assert_eq!(events.len(), 1);
         assert!(matches!(
@@ -740,12 +756,14 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         // Place 3 asks at same price (FIFO order: 1, 2, 3)
-        engine.process_place(place_order(1, 100, Side::Ask, 10000, 100));
-        engine.process_place(place_order(2, 101, Side::Ask, 10000, 100));
-        engine.process_place(place_order(3, 102, Side::Ask, 10000, 100));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 100), &mut events);
+        engine.process_place(place_order(2, 101, Side::Ask, 10000, 100), &mut events);
+        engine.process_place(place_order(3, 102, Side::Ask, 10000, 100), &mut events);
+        events.clear();
         
         // Match against first two
-        let events = engine.process_place(place_order(4, 200, Side::Bid, 10000, 200));
+        engine.process_place(place_order(4, 200, Side::Bid, 10000, 200), &mut events);
         
         let trades: Vec<_> = events.iter()
             .filter_map(|e| if let OutputEvent::Trade(t) = e { Some(t) } else { None })
@@ -764,12 +782,14 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         // Place asks at different prices
-        engine.process_place(place_order(1, 100, Side::Ask, 10020, 100)); // Worst
-        engine.process_place(place_order(2, 100, Side::Ask, 10000, 100)); // Best
-        engine.process_place(place_order(3, 100, Side::Ask, 10010, 100)); // Middle
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Ask, 10020, 100), &mut events); // Worst
+        engine.process_place(place_order(2, 100, Side::Ask, 10000, 100), &mut events); // Best
+        engine.process_place(place_order(3, 100, Side::Ask, 10010, 100), &mut events); // Middle
+        events.clear();
         
         // Match - should go 10000 -> 10010 -> 10020
-        let events = engine.process_place(place_order(4, 200, Side::Bid, 10020, 250));
+        engine.process_place(place_order(4, 200, Side::Bid, 10020, 250), &mut events);
         
         let trades: Vec<_> = events.iter()
             .filter_map(|e| if let OutputEvent::Trade(t) = e { Some(t) } else { None })
@@ -807,10 +827,12 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         // Place a resting ask
-        engine.process_place(place_order(1, 100, Side::Ask, 10000, 100));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 100), &mut events);
+        events.clear();
         
         // IOC bid that fully matches
-        let events = engine.process_place(ioc_order(2, 200, Side::Bid, 10000, 100));
+        engine.process_place(ioc_order(2, 200, Side::Bid, 10000, 100), &mut events);
         
         let trades = events.iter()
             .filter(|e| matches!(e, OutputEvent::Trade(_)))
@@ -825,10 +847,12 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         // Place a small resting ask
-        engine.process_place(place_order(1, 100, Side::Ask, 10000, 50));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 50), &mut events);
+        events.clear();
         
         // IOC bid that partially matches - unfilled portion should be canceled
-        let events = engine.process_place(ioc_order(2, 200, Side::Bid, 10000, 100));
+        engine.process_place(ioc_order(2, 200, Side::Bid, 10000, 100), &mut events);
         
         let trades = events.iter()
             .filter(|e| matches!(e, OutputEvent::Trade(_)))
@@ -843,10 +867,12 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         // Place an ask above the IOC bid price
-        engine.process_place(place_order(1, 100, Side::Ask, 10100, 100));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Ask, 10100, 100), &mut events);
+        events.clear();
         
         // IOC bid that doesn't cross
-        let events = engine.process_place(ioc_order(2, 200, Side::Bid, 10000, 100));
+        engine.process_place(ioc_order(2, 200, Side::Bid, 10000, 100), &mut events);
         
         // Should have no trades, no accepted (IOC doesn't rest)
         let trades = events.iter().filter(|e| matches!(e, OutputEvent::Trade(_))).count();
@@ -883,10 +909,12 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         // Place enough liquidity
-        engine.process_place(place_order(1, 100, Side::Ask, 10000, 100));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 100), &mut events);
+        events.clear();
         
         // FOK bid that fully matches
-        let events = engine.process_place(fok_order(2, 200, Side::Bid, 10000, 100));
+        engine.process_place(fok_order(2, 200, Side::Bid, 10000, 100), &mut events);
         
         let trades = events.iter().filter(|e| matches!(e, OutputEvent::Trade(_))).count();
         let rejected = events.iter().filter(|e| matches!(e, OutputEvent::Rejected(_))).count();
@@ -901,10 +929,12 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         // Place smaller liquidity than FOK needs
-        engine.process_place(place_order(1, 100, Side::Ask, 10000, 50));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 50), &mut events);
+        events.clear();
         
         // FOK bid that can't fully fill
-        let events = engine.process_place(fok_order(2, 200, Side::Bid, 10000, 100));
+        engine.process_place(fok_order(2, 200, Side::Bid, 10000, 100), &mut events);
         
         let trades = events.iter().filter(|e| matches!(e, OutputEvent::Trade(_))).count();
         let rejected = events.iter()
@@ -924,7 +954,8 @@ mod tests {
         // No resting orders
         
         // FOK bid with no matching liquidity
-        let events = engine.process_place(fok_order(1, 200, Side::Bid, 10000, 100));
+        let mut events = Vec::new();
+        engine.process_place(fok_order(1, 200, Side::Bid, 10000, 100), &mut events);
         
         let rejected = events.iter().filter(|e| matches!(e, OutputEvent::Rejected(_))).count();
         
@@ -937,12 +968,14 @@ mod tests {
         let mut engine = MatchingEngine::new(1000);
         
         // Place liquidity across multiple levels
-        engine.process_place(place_order(1, 100, Side::Ask, 10000, 30));
-        engine.process_place(place_order(2, 100, Side::Ask, 10010, 40));
-        engine.process_place(place_order(3, 100, Side::Ask, 10020, 50));
+        let mut events = Vec::new();
+        engine.process_place(place_order(1, 100, Side::Ask, 10000, 30), &mut events);
+        engine.process_place(place_order(2, 100, Side::Ask, 10010, 40), &mut events);
+        engine.process_place(place_order(3, 100, Side::Ask, 10020, 50), &mut events);
+        events.clear();
         
         // FOK bid that can fill across levels
-        let events = engine.process_place(fok_order(4, 200, Side::Bid, 10020, 100));
+        engine.process_place(fok_order(4, 200, Side::Bid, 10020, 100), &mut events);
         
         let trades = events.iter().filter(|e| matches!(e, OutputEvent::Trade(_))).count();
         
